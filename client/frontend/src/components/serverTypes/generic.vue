@@ -1,5 +1,5 @@
 <script setup>
-import { ref, defineAsyncComponent, inject, onMounted, onUnmounted } from 'vue'
+import { ref, computed, defineAsyncComponent, inject, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 
@@ -25,6 +25,10 @@ const Files = defineAsyncComponent({
 })
 const Settings = defineAsyncComponent({
   loader: () => import('../server/Settings.vue'),
+  loadingComponent: Loader
+})
+const ModMarketplace = defineAsyncComponent({
+  loader: () => import('../server/ModMarketplace.vue'),
   loadingComponent: Loader
 })
 const Users = defineAsyncComponent({
@@ -58,6 +62,13 @@ let httpCount = 2
 
 const props = defineProps({
   server: { type: Object, required: true }
+})
+
+const isMinecraftJava = computed(() => {
+  if (!props.server) return false
+  const t = (props.server.type || '').toLowerCase()
+  const icon = (props.server.icon || '').toLowerCase()
+  return t.includes('minecraft') || icon.includes('minecraft') || t === 'minecraft-java'
 })
 
 let task = null
@@ -141,6 +152,15 @@ onUnmounted(() => {
         hotkey="t s"
       >
         <settings :server="server" />
+      </tab>
+      <tab
+        v-if="isMinecraftJava && (server.hasScope('server.files.view') || server.hasScope('server.files.edit'))"
+        id="mods"
+        :title="t('servers.ModMarketplace') || 'Mod Marketplace'"
+        icon="puzzle"
+        hotkey="t m"
+      >
+        <mod-marketplace :server="server" />
       </tab>
       <tab
         v-if="server.hasScope('server.users.view')"

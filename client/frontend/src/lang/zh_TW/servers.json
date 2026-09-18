@@ -58,5 +58,6 @@
   "IncompatibleArch": "架構 '{arch}' 不相容",
   "IncompatibleOs": "作業系統 '{os}' 不相容",
   "IncompatibleEnv": "環境 '{env}' 不相容",
-  "AdvancedSettings": "進階設定"
+  "AdvancedSettings": "進階設定",
+  "ModMarketplace": "Mod Marketplace"
 }

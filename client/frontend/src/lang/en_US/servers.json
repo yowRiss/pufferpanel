@@ -26,6 +26,7 @@
   "Environment": "Environment",
   "Admin": "Admin",
   "Settings": "Settings",
+  "ModMarketplace": "Mod Marketplace",
   "SaveSettings": "Save Settings",
   "SettingsSaved": "Settings saved",
   "AdminOnlySetting": "This setting is only visible to admins",

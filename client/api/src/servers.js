@@ -310,6 +310,7 @@ class Server {
     this.node = serverData.server.node
     this.port = serverData.server.port
     this.type = serverData.server.type
+    this.icon = serverData.server.icon
     this._scopes = serverData.permissions.scopes
     this._api = api
     this._openSocket()

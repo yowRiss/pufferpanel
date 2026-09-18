@@ -58,5 +58,6 @@
   "IncompatibleArch": "Inkompatibel mit der Architektur '{arch}‘",
   "IncompatibleOs": "Inkompatibel mit dem Betriebssystem '{os}‘",
   "IncompatibleEnv": "Inkompatibel mit der Umgebung '{env}‘",
-  "AdvancedSettings": "Erweiterte Einstellungen"
+  "AdvancedSettings": "Erweiterte Einstellungen",
+  "ModMarketplace": "Mod Marketplace"
 }

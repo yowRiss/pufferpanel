@@ -58,5 +58,6 @@
   "IncompatibleArch": "アーキテクチャ 『{arch}』 と互換性がありません",
   "IncompatibleOs": "OS 『{os}』 と互換性がありません",
   "IncompatibleEnv": "環境 『{env}』 と互換性がありません",
-  "AdvancedSettings": "詳細設定"
+  "AdvancedSettings": "詳細設定",
+  "ModMarketplace": "Mod Marketplace"
 }

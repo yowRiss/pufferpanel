@@ -6606,6 +6606,9 @@ $mdi-icons: (
 .icon-settings {
   @include icon-name(cog);
 }
+.icon-puzzle {
+  @include icon-name(puzzle-outline);
+}
 .icon-users {
   @include icon-name(account-multiple);
 }

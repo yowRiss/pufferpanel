@@ -30,3 +30,5 @@ favicon.ico
 out/
 web/tests/
 web/swagger/docs.go
+pufferpanel
+pufferpanel-dev
