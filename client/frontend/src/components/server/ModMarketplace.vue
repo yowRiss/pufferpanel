@@ -89,6 +89,21 @@ const loadingInstalled = ref(false)
 const installing = ref({}) // { [projectId]: { status: string } }
 const uninstalling = ref({}) // { [filename]: boolean }
 
+// Mod update checking & tracking
+const checkingUpdates = ref(false)
+const updateCheckDone = ref(false)
+const outdatedMods = ref({}) // { [filename]: { filename, project, title, iconUrl, currentVersion, newVersion, latestVersion, latestFile } }
+const upToDateMods = ref(new Set()) // Set of filenames confirmed up to date
+const updatingMods = ref({}) // { [filename]: { status: string } }
+const updatingAll = ref(false)
+const updateAllStatus = ref('')
+
+const outdatedCount = computed(() => Object.keys(outdatedMods.value).length)
+const isUpdatingAny = computed(() => updatingAll.value || Object.keys(updatingMods.value).length > 0)
+function isUpdating(filename) {
+  return !!updatingMods.value[filename]
+}
+
 // Version selector modal
 const versionModalOpen = ref(false)
 const versionModalMod = ref(null)
@@ -352,8 +367,21 @@ const MOD_ALIASES = {
   'geyser': ['geyser', 'w0yi10ON'],
   'floodgate': ['floodgate', 'bWrNNfkb'],
   'viaversion': ['viaversion', 'P1OZGk5p'],
-  'viabackwards': ['viabackwards', '140eR2qZ'],
-  'spark': ['spark', 'l6YWDetect']
+  'spark': ['spark', 'l6YWDetect'],
+  'scalablelux': ['scalablelux', 'ScalableLux'],
+  'jade': ['jade'],
+  'balm': ['balm', 'balm-fabric'],
+  'balmfabric': ['balm', 'balm-fabric'],
+  'waystones': ['waystones'],
+  'betterbundle': ['better-bundle'],
+  'better-bundle': ['better-bundle'],
+  'collective': ['collective'],
+  'debugify': ['debugify'],
+  'lithostitched': ['lithostitched'],
+  'servercore': ['servercore'],
+  'vanillarefresh': ['vanilla-refresh'],
+  'vanilla-refresh': ['vanilla-refresh'],
+  'shogi': ['shogi']
 }
 
 function extractModBaseName(filename) {
@@ -423,6 +451,35 @@ function getInstalledFile(mod) {
 
     return false
   }) || null
+}
+
+function extractVersionFromFilename(filename) {
+  let base = filename.replace(/\.jar$/i, '').replace(/^\[[^\]]+\]\s*/, '')
+  base = base.replace(/[-_+](fabric|forge|neoforge|quilt)$/i, '')
+  const m = base.match(/(?:[-_+](?:fabric|forge|neoforge|quilt|mc\d+(?:\.\d+)*))?[-_+](?:v|mc)?(\d+[\w.+~-]*)$/i)
+  if (m && m[1]) return m[1]
+  const m2 = base.match(/(\d+\.\d+(?:\.\d+)?(?:[-+][\w.]+)?)/)
+  return m2 ? m2[1] : ''
+}
+
+function parseVersionNumbers(v) {
+  if (!v) return []
+  const clean = v.replace(/^[^\d]*/, '')
+  const mainPart = clean.split(/[+-]/)[0]
+  return mainPart.split('.').map(p => parseInt(p, 10)).filter(n => !isNaN(n))
+}
+
+function isNewerVersion(currentVerStr, latestVerStr) {
+  const current = parseVersionNumbers(currentVerStr)
+  const latest = parseVersionNumbers(latestVerStr)
+  const len = Math.max(current.length, latest.length)
+  for (let i = 0; i < len; i++) {
+    const c = current[i] || 0
+    const l = latest[i] || 0
+    if (l > c) return true
+    if (l < c) return false
+  }
+  return false
 }
 
 const mobileFiltersOpen = ref(false)
@@ -809,6 +866,296 @@ async function uninstallMod(filename) {
   }
 }
 
+// File to Project Mapping & Version History Caches
+const fileProjectCache = new Map()
+const allProjectVersionsCache = new Map()
+
+async function fetchAllProjectVersions(projectId) {
+  if (allProjectVersionsCache.has(projectId)) {
+    return allProjectVersionsCache.get(projectId)
+  }
+  try {
+    const res = await fetch(`https://api.modrinth.com/v2/project/${projectId}/version`)
+    if (res.ok) {
+      const data = await res.json()
+      allProjectVersionsCache.set(projectId, data)
+      return data
+    }
+  } catch (e) {
+    console.warn('Failed to fetch all versions for:', projectId, e)
+  }
+  return []
+}
+
+async function resolveProjectForFile(filename) {
+  if (fileProjectCache.has(filename)) {
+    return fileProjectCache.get(filename)
+  }
+
+  // 1. Check if any mod currently loaded in `mods.value` matches
+  for (const m of mods.value) {
+    const matched = getInstalledFile(m)
+    if (matched && matched.name.toLowerCase() === filename.toLowerCase()) {
+      const info = {
+        project_id: m.project_id,
+        id: m.project_id,
+        slug: m.slug,
+        title: m.title,
+        icon_url: m.icon_url
+      }
+      fileProjectCache.set(filename, info)
+      return info
+    }
+  }
+
+  const baseName = extractModBaseName(filename)
+  const cleanBase = baseName.replace(/[^a-z0-9]/g, '')
+  const alias = MOD_ALIASES[cleanBase] || MOD_ALIASES[baseName]
+  const searchQuery = alias ? alias[0] : baseName
+
+  try {
+    const facets = JSON.stringify([['project_type:mod']])
+    const res = await fetch(`https://api.modrinth.com/v2/search?query=${encodeURIComponent(searchQuery)}&facets=${facets}&limit=5`)
+    if (res.ok) {
+      const data = await res.json()
+      if (data.hits && data.hits.length) {
+        // Find hit whose slug or title best matches
+        let hit = data.hits.find(h => {
+          const hSlug = (h.slug || '').toLowerCase()
+          const hTitle = (h.title || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+          if (alias && alias.some(a => a.toLowerCase() === hSlug || a.toLowerCase() === (h.project_id || '').toLowerCase())) return true
+          if (hSlug === baseName || hSlug === cleanBase) return true
+          if (hTitle === cleanBase) return true
+          return false
+        }) || data.hits[0]
+
+        const info = {
+          project_id: hit.project_id,
+          id: hit.project_id,
+          slug: hit.slug,
+          title: hit.title,
+          icon_url: hit.icon_url
+        }
+        fileProjectCache.set(filename, info)
+        return info
+      }
+    }
+  } catch (e) {
+    console.warn('Failed to resolve project for file:', filename, e)
+  }
+
+  return null
+}
+
+async function checkForUpdates() {
+  if (checkingUpdates.value) return
+  checkingUpdates.value = true
+  updateCheckDone.value = false
+  outdatedMods.value = {}
+  upToDateMods.value = new Set()
+
+  try {
+    await fetchInstalledMods()
+    if (!installedMods.value.length) {
+      toast.info('No mods are installed in the mods/ directory.')
+      return
+    }
+
+    const targetLoader = selectedLoader.value || (detectedLoader.value !== 'vanilla' ? detectedLoader.value : 'fabric') || 'fabric'
+    const targetVersion = selectedVersion.value || detectedVersion.value || ''
+
+    for (const file of installedMods.value) {
+      try {
+        const proj = await resolveProjectForFile(file.name)
+        if (!proj) continue
+
+        const loadersParam = targetLoader ? JSON.stringify([targetLoader]) : '[]'
+        const versionsParam = targetVersion ? JSON.stringify([targetVersion.trim()]) : '[]'
+
+        const projId = proj.project_id || proj.id || proj.slug
+        let verUrl = `https://api.modrinth.com/v2/project/${projId}/version`
+        const verParams = new URLSearchParams()
+        if (targetLoader) verParams.set('loaders', loadersParam)
+        if (targetVersion) verParams.set('game_versions', versionsParam)
+
+        let vRes = await fetch(`${verUrl}?${verParams.toString()}`)
+        let vList = vRes.ok ? await vRes.json() : []
+
+        // Fallback: loader only
+        if (!vList.length && targetLoader) {
+          vRes = await fetch(`${verUrl}?loaders=${loadersParam}`)
+          vList = vRes.ok ? await vRes.json() : []
+        }
+
+        // Fallback: all versions
+        if (!vList.length) {
+          vRes = await fetch(verUrl)
+          vList = vRes.ok ? await vRes.json() : []
+        }
+
+        if (!vList.length) continue
+
+        const latest = vList[0]
+        const latestFile = latest.files.find(f => f.primary) || latest.files[0]
+        if (!latestFile) continue
+
+        // 1. Direct match with latest file
+        if (latestFile.filename.toLowerCase() === file.name.toLowerCase()) {
+          upToDateMods.value.add(file.name)
+          continue
+        }
+
+        // 2. Direct match with an older version in filtered list
+        const olderIdx = vList.findIndex(v => v.files.some(f => f.filename.toLowerCase() === file.name.toLowerCase()))
+        if (olderIdx > 0) {
+          outdatedMods.value[file.name] = {
+            filename: file.name,
+            project: proj,
+            title: proj.title,
+            iconUrl: proj.icon_url,
+            currentVersion: vList[olderIdx].version_number || vList[olderIdx].name,
+            newVersion: latest.version_number || latest.name,
+            latestVersion: latest,
+            latestFile: latestFile
+          }
+          continue
+        }
+
+        // 3. Check across all project versions
+        const allVers = await fetchAllProjectVersions(projId)
+        const allIdx = allVers.findIndex(v => v.files.some(f => f.filename.toLowerCase() === file.name.toLowerCase()))
+        if (allIdx > 0) {
+          outdatedMods.value[file.name] = {
+            filename: file.name,
+            project: proj,
+            title: proj.title,
+            iconUrl: proj.icon_url,
+            currentVersion: allVers[allIdx].version_number || allVers[allIdx].name,
+            newVersion: latest.version_number || latest.name,
+            latestVersion: latest,
+            latestFile: latestFile
+          }
+          continue
+        }
+
+        // 4. Version string comparison fallback
+        const installedVer = extractVersionFromFilename(file.name)
+        const latestVer = latest.version_number || latest.name
+        if (installedVer && latestVer && isNewerVersion(installedVer, latestVer)) {
+          outdatedMods.value[file.name] = {
+            filename: file.name,
+            project: proj,
+            title: proj.title,
+            iconUrl: proj.icon_url,
+            currentVersion: installedVer,
+            newVersion: latestVer,
+            latestVersion: latest,
+            latestFile: latestFile
+          }
+        } else {
+          upToDateMods.value.add(file.name)
+        }
+      } catch (e) {
+        console.warn('Failed update check for file:', file.name, e)
+      }
+    }
+
+    const count = Object.keys(outdatedMods.value).length
+    if (count > 0) {
+      toast.success(`Found ${count} mod update${count > 1 ? 's' : ''}!`)
+    } else {
+      toast.success('All checked mods are up to date!')
+    }
+  } catch (err) {
+    console.error('Update check error:', err)
+    toast.error('Failed to check for mod updates.')
+  } finally {
+    checkingUpdates.value = false
+    updateCheckDone.value = true
+  }
+}
+
+async function updateSingleMod(oldFilename) {
+  const info = outdatedMods.value[oldFilename]
+  if (!info) return
+
+  if (!canEditFiles.value) {
+    toast.error('You do not have permission to modify server files.')
+    return
+  }
+
+  updatingMods.value[oldFilename] = { status: 'Preparing...' }
+
+  try {
+    // Step 1: Resolve and install dependencies for the latest version
+    if (info.latestVersion && info.latestVersion.dependencies && info.latestVersion.dependencies.length) {
+      updatingMods.value[oldFilename] = { status: 'Checking dependencies...' }
+      const projId = info.project.project_id || info.project.id
+      await resolveAndInstallDependencies(info.latestVersion, projId, new Set([projId]), [])
+    }
+
+    // Step 2: Download latest file from Modrinth CDN
+    updatingMods.value[oldFilename] = { status: `Downloading v${info.newVersion}...` }
+    const downloadRes = await fetch(info.latestFile.url)
+    if (!downloadRes.ok) {
+      throw new Error(`Failed to download updated jar (HTTP ${downloadRes.status})`)
+    }
+    const blob = await downloadRes.blob()
+
+    // Step 3: Ensure mods folder exists and upload new jar
+    updatingMods.value[oldFilename] = { status: 'Saving to server...' }
+    const targetPath = `mods/${info.latestFile.filename}`
+    await props.server.uploadFile(targetPath, blob)
+
+    // Step 4: Remove old jar if filename is different
+    if (info.latestFile.filename.toLowerCase() !== oldFilename.toLowerCase()) {
+      updatingMods.value[oldFilename] = { status: 'Removing old version...' }
+      try {
+        await props.server.deleteFile(`mods/${oldFilename}`)
+      } catch (e) {
+        console.warn('Could not delete old mod jar:', oldFilename, e)
+      }
+    }
+
+    // Step 5: Clean up state & refresh
+    delete outdatedMods.value[oldFilename]
+    upToDateMods.value.add(info.latestFile.filename)
+    await fetchInstalledMods()
+
+    toast.success(`Successfully updated ${info.title} to v${info.newVersion}!`)
+  } catch (err) {
+    console.error('Update failed for', oldFilename, err)
+    toast.error(`Update failed: ${err.message || err}`)
+  } finally {
+    delete updatingMods.value[oldFilename]
+  }
+}
+
+async function updateAllOutdatedMods() {
+  if (updatingAll.value) return
+  const entries = Object.entries(outdatedMods.value)
+  if (!entries.length) return
+
+  updatingAll.value = true
+  let successCount = 0
+
+  for (let i = 0; i < entries.length; i++) {
+    const [oldFilename, info] = entries[i]
+    updateAllStatus.value = `(${i + 1}/${entries.length}) ${info.title}`
+    try {
+      await updateSingleMod(oldFilename)
+      successCount++
+    } catch (e) {
+      console.error('Failed to update mod in batch:', oldFilename, e)
+    }
+  }
+
+  updatingAll.value = false
+  updateAllStatus.value = ''
+  toast.success(`Update finished: ${successCount} of ${entries.length} mods updated.`)
+  await fetchInstalledMods()
+}
+
 async function openVersionsModal(mod) {
   versionModalMod.value = mod
   versionModalVersions.value = []
@@ -991,8 +1338,23 @@ function formatBytes(bytes) {
           >
             <icon name="files" />
             Installed ({{ installedMods.length }})
+            <span v-if="outdatedCount > 0" class="nav-update-pill" :title="outdatedCount + ' mod update' + (outdatedCount > 1 ? 's' : '') + ' available'">
+              {{ outdatedCount }} update{{ outdatedCount > 1 ? 's' : '' }}
+            </span>
           </button>
         </div>
+
+        <btn
+          variant="outline"
+          color="primary"
+          class="check-updates-btn"
+          :disabled="checkingUpdates || installedMods.length === 0"
+          title="Check all installed mods for updates from Modrinth"
+          @click="checkForUpdates"
+        >
+          <icon :name="checkingUpdates ? 'loading' : 'reload'" :spin="checkingUpdates" />
+          {{ checkingUpdates ? 'Checking Updates...' : 'Check for Updates' }}
+        </btn>
 
         <btn variant="outline" color="neutral" @click="fetchInstalledMods(); searchMods()">
           <icon name="reload" />
@@ -1385,15 +1747,29 @@ function formatBytes(bytes) {
 
               <!-- If already installed -->
               <template v-if="getInstalledFile(mod)">
-                <span class="installed-badge" title="Already installed in mods/ folder">
-                  ✓ Installed
-                </span>
+                <template v-if="outdatedMods[getInstalledFile(mod).name]">
+                  <btn
+                    color="primary"
+                    class="action-btn update-card-btn"
+                    :disabled="!canEditFiles || isUpdating(getInstalledFile(mod).name)"
+                    :title="'Update to v' + outdatedMods[getInstalledFile(mod).name].newVersion"
+                    @click.stop="updateSingleMod(getInstalledFile(mod).name)"
+                  >
+                    <icon :name="isUpdating(getInstalledFile(mod).name) ? 'loading' : 'install'" :spin="isUpdating(getInstalledFile(mod).name)" />
+                    {{ isUpdating(getInstalledFile(mod).name) ? 'Updating...' : `Update (${outdatedMods[getInstalledFile(mod).name].newVersion})` }}
+                  </btn>
+                </template>
+                <template v-else>
+                  <span class="installed-badge" title="Already installed in mods/ folder">
+                    ✓ Installed
+                  </span>
+                </template>
                 <btn
                   variant="icon"
                   color="danger"
                   class="action-btn-small"
                   :tooltip="'Uninstall ' + getInstalledFile(mod).name"
-                  :disabled="uninstalling[getInstalledFile(mod).name]"
+                  :disabled="uninstalling[getInstalledFile(mod).name] || isUpdating(getInstalledFile(mod).name)"
                   @click.stop="uninstallMod(getInstalledFile(mod).name)"
                 >
                   <icon :name="uninstalling[getInstalledFile(mod).name] ? 'loading' : 'close'" :spin="uninstalling[getInstalledFile(mod).name]" />
@@ -1480,12 +1856,65 @@ function formatBytes(bytes) {
     <!-- INSTALLED MODS VIEW -->
     <div v-else class="installed-view">
       <div class="installed-header-bar">
-        <h3>
-          Installed Mods ({{ installedMods.length }})
-        </h3>
-        <p class="section-desc">
-          These .jar files are currently present in your server's <code>mods/</code> directory.
-        </p>
+        <div class="installed-header-titles">
+          <h3>
+            Installed Mods ({{ installedMods.length }})
+          </h3>
+          <p class="section-desc">
+            These .jar files are currently present in your server's <code>mods/</code> directory.
+          </p>
+        </div>
+
+        <div class="installed-header-actions">
+          <btn
+            variant="outline"
+            color="primary"
+            class="check-updates-btn"
+            :disabled="checkingUpdates || installedMods.length === 0"
+            @click="checkForUpdates"
+          >
+            <icon :name="checkingUpdates ? 'loading' : 'reload'" :spin="checkingUpdates" />
+            {{ checkingUpdates ? 'Checking Updates...' : 'Check for Updates' }}
+          </btn>
+          <btn
+            v-if="outdatedCount > 0"
+            color="primary"
+            class="update-all-header-btn"
+            :disabled="isUpdatingAny || !canEditFiles"
+            @click="updateAllOutdatedMods"
+          >
+            <icon :name="updatingAll ? 'loading' : 'install'" :spin="updatingAll" />
+            {{ updatingAll ? updateAllStatus : `Update All (${outdatedCount})` }}
+          </btn>
+        </div>
+      </div>
+
+      <!-- Outdated Mods Alert Banner -->
+      <div v-if="outdatedCount > 0" class="updates-available-card">
+        <div class="card-left">
+          <div class="update-icon-circle">
+            <icon name="install" />
+          </div>
+          <div class="update-text-content">
+            <div class="update-card-title">
+              {{ outdatedCount }} Mod Update{{ outdatedCount > 1 ? 's' : '' }} Available
+            </div>
+            <div class="update-card-desc">
+              Newer compatible versions were detected. Update individual mods below or update all with one click.
+            </div>
+          </div>
+        </div>
+        <div class="card-right">
+          <btn
+            color="primary"
+            class="update-all-main-btn"
+            :disabled="isUpdatingAny || !canEditFiles"
+            @click="updateAllOutdatedMods"
+          >
+            <icon :name="updatingAll ? 'loading' : 'install'" :spin="updatingAll" />
+            {{ updatingAll ? updateAllStatus : `Update All Outdated Mods (${outdatedCount})` }}
+          </btn>
+        </div>
       </div>
 
       <div v-if="loadingInstalled" class="state-container">
@@ -1506,16 +1935,39 @@ function formatBytes(bytes) {
         <div
           v-for="file in installedMods"
           :key="file.name"
-          class="installed-item"
+          :class="['installed-item', outdatedMods[file.name] ? 'item-outdated' : '']"
         >
           <div class="installed-item-info">
-            <icon name="file-jar" class="jar-icon" />
-            <div>
-              <span class="file-name">{{ file.name }}</span>
+            <img
+              v-if="outdatedMods[file.name]?.iconUrl"
+              :src="outdatedMods[file.name].iconUrl"
+              :alt="outdatedMods[file.name].title"
+              class="mod-item-thumb"
+              @error="(e) => e.target.style.display = 'none'"
+            />
+            <icon v-else name="file-jar" class="jar-icon" />
+            <div class="installed-text-wrap">
+              <div class="file-name-line">
+                <span class="file-name">{{ file.name }}</span>
+                <span v-if="outdatedMods[file.name]" class="badge-update-alert">
+                  Update Available: v{{ outdatedMods[file.name].newVersion }}
+                </span>
+                <span v-else-if="upToDateMods.has(file.name)" class="badge-uptodate">
+                  ✓ Up to date
+                </span>
+              </div>
               <div class="file-meta">
+                <span v-if="outdatedMods[file.name]?.title" class="mod-name-label">
+                  <strong>{{ outdatedMods[file.name].title }}</strong> •
+                </span>
                 <span>{{ formatBytes(file.size) }}</span>
                 <span v-if="file.modifyTime">
                   • Modified {{ new Date(file.modifyTime * 1000).toLocaleDateString() }}
+                </span>
+                <span v-if="outdatedMods[file.name]" class="version-transition">
+                  • <span class="cur-ver">{{ outdatedMods[file.name].currentVersion }}</span>
+                  <span class="ver-arrow">→</span>
+                  <span class="new-ver">{{ outdatedMods[file.name].newVersion }}</span>
                 </span>
               </div>
             </div>
@@ -1523,9 +1975,20 @@ function formatBytes(bytes) {
 
           <div class="installed-item-actions">
             <btn
+              v-if="outdatedMods[file.name]"
+              color="primary"
+              class="update-btn"
+              :disabled="isUpdating(file.name) || !canEditFiles"
+              @click="updateSingleMod(file.name)"
+            >
+              <icon :name="isUpdating(file.name) ? 'loading' : 'install'" :spin="isUpdating(file.name)" />
+              {{ isUpdating(file.name) ? updatingMods[file.name].status : 'Update' }}
+            </btn>
+
+            <btn
               variant="outline"
               color="danger"
-              :disabled="uninstalling[file.name]"
+              :disabled="uninstalling[file.name] || isUpdating(file.name)"
               @click="uninstallMod(file.name)"
             >
               <icon :name="uninstalling[file.name] ? 'loading' : 'remove'" :spin="uninstalling[file.name]" />
@@ -1653,7 +2116,17 @@ function formatBytes(bytes) {
           <div class="details-actions">
             <template v-if="getInstalledFile(descModalMod)">
               <div class="installed-status-box">
-                <span class="installed-badge-large">
+                <btn
+                  v-if="outdatedMods[getInstalledFile(descModalMod).name]"
+                  color="primary"
+                  class="btn-install-modal update-modal-btn"
+                  :disabled="!canEditFiles || isUpdating(getInstalledFile(descModalMod).name)"
+                  @click="updateSingleMod(getInstalledFile(descModalMod).name)"
+                >
+                  <icon :name="isUpdating(getInstalledFile(descModalMod).name) ? 'loading' : 'install'" :spin="isUpdating(getInstalledFile(descModalMod).name)" />
+                  {{ isUpdating(getInstalledFile(descModalMod).name) ? updatingMods[getInstalledFile(descModalMod).name].status : `Update to v${outdatedMods[getInstalledFile(descModalMod).name].newVersion}` }}
+                </btn>
+                <span v-else class="installed-badge-large">
                   ✓ Installed
                 </span>
                 <span class="installed-filename" :title="getInstalledFile(descModalMod).name">
@@ -1663,7 +2136,7 @@ function formatBytes(bytes) {
                   color="danger"
                   variant="outline"
                   class="btn-uninstall-modal"
-                  :disabled="uninstalling[getInstalledFile(descModalMod).name]"
+                  :disabled="uninstalling[getInstalledFile(descModalMod).name] || isUpdating(getInstalledFile(descModalMod).name)"
                   @click="uninstallMod(getInstalledFile(descModalMod).name)"
                 >
                   <icon :name="uninstalling[getInstalledFile(descModalMod).name] ? 'loading' : 'close'" :spin="uninstalling[getInstalledFile(descModalMod).name]" />
@@ -3011,17 +3484,105 @@ function formatBytes(bytes) {
 
 /* Installed View */
 .installed-header-bar {
-  margin-bottom: 1rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
 }
 
-.installed-header-bar h3 {
+.installed-header-titles h3 {
   margin: 0 0 0.25rem 0;
+}
+
+.installed-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
 }
 
 .section-desc {
   margin: 0;
   opacity: 0.7;
   font-size: 0.85rem;
+}
+
+/* Nav update pill */
+.nav-update-pill {
+  background: linear-gradient(135deg, #f59e0b, #ea580c);
+  color: #ffffff;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0.15rem 0.45rem;
+  border-radius: 9999px;
+  letter-spacing: 0.3px;
+  box-shadow: 0 2px 6px rgba(234, 88, 12, 0.4);
+  animation: pulse-badge 2s infinite;
+  display: inline-flex;
+  align-items: center;
+}
+
+@keyframes pulse-badge {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.05); opacity: 0.9; }
+}
+
+.check-updates-btn {
+  white-space: nowrap;
+}
+
+/* Updates available card banner */
+.updates-available-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: linear-gradient(135deg, rgba(234, 88, 12, 0.14), rgba(245, 158, 11, 0.08));
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 10px;
+  padding: 1.15rem 1.4rem;
+  margin-bottom: 1.25rem;
+  gap: 1rem;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+.card-left {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.update-icon-circle {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(245, 158, 11, 0.2);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #f59e0b;
+  font-size: 1.3rem;
+  flex-shrink: 0;
+}
+
+.update-card-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #fbbf24;
+  margin-bottom: 0.2rem;
+}
+
+.update-card-desc {
+  font-size: 0.85rem;
+  color: #cbd5e1;
+  line-height: 1.4;
+}
+
+.update-all-main-btn,
+.update-all-header-btn {
+  white-space: nowrap;
+  font-weight: 600;
 }
 
 .installed-list {
@@ -3037,13 +3598,118 @@ function formatBytes(bytes) {
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.08);
   padding: 0.75rem 1rem;
-  border-radius: 6px;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+}
+
+.installed-item.item-outdated {
+  border-color: rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.03);
 }
 
 .installed-item-info {
   display: flex;
   align-items: center;
   gap: 0.85rem;
+}
+
+.mod-item-thumb {
+  width: 38px;
+  height: 38px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  flex-shrink: 0;
+}
+
+.installed-text-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.file-name-line {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.badge-update-alert {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(245, 158, 11, 0.18);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+
+.badge-uptodate {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(16, 185, 129, 0.1);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.version-transition {
+  font-size: 0.78rem;
+  color: #94a3b8;
+}
+
+.cur-ver {
+  color: #ef4444;
+  text-decoration: line-through;
+  opacity: 0.8;
+}
+
+.ver-arrow {
+  margin: 0 0.25rem;
+  color: #64748b;
+}
+
+.new-ver {
+  color: #34d399;
+  font-weight: 600;
+}
+
+.update-btn {
+  font-size: 0.82rem;
+  padding: 0.4rem 0.85rem;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.update-card-btn {
+  background: linear-gradient(135deg, #0284c7, #0369a1);
+  border-color: #38bdf8;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.update-card-btn:hover {
+  background: linear-gradient(135deg, #0369a1, #075985);
+}
+
+.update-modal-btn {
+  background: linear-gradient(135deg, #0284c7, #0369a1);
+  border-color: #38bdf8;
+  color: #ffffff;
+}
+
+.installed-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .jar-icon {
