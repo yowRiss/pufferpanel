@@ -13,6 +13,7 @@
   "Statistics": "Statistics",
   "CPU": "CPU",
   "Memory": "Memory",
+  "Network": "Network Traffic",
   "JvmHeapAlloc": "Heapspace allocated",
   "JvmHeapUsed": "Heapspace in use",
   "JvmMetaAlloc": "Metaspace allocated",

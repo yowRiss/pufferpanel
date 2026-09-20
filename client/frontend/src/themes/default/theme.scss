@@ -39,6 +39,10 @@
   --chartjs-series-fill-jvm-heapspace-allocated: #ff8f0020;
   --chartjs-series-line-jvm-heapspace-used: #ffb300;
   --chartjs-series-fill-jvm-heapspace-used: #ffb30020;
+  --chartjs-series-line-network-rx: #10b981;
+  --chartjs-series-fill-network-rx: #10b98120;
+  --chartjs-series-line-network-tx: #3b82f6;
+  --chartjs-series-fill-network-tx: #3b82f620;
 }
 
 .chart {

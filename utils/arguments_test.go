@@ -205,6 +205,34 @@ func TestShellReplace(t *testing.T) {
 			},
 			expected: "testing \"FAKE \\\\\\\"test data\\\"\"",
 		},
+		{
+			str: "testing ${test}",
+			data: map[string]any{
+				"test": "",
+			},
+			expected: "testing ",
+		},
+		{
+			str: "java ${jvmArgs} -jar server.jar",
+			data: map[string]any{
+				"jvmArgs": "",
+			},
+			expected: "java  -jar server.jar",
+		},
+		{
+			str: "java ${jvmArgs} -jar server.jar",
+			data: map[string]any{
+				"jvmArgs": "-Xms1G -XX:+UseG1GC",
+			},
+			expected: "java -Xms1G -XX:+UseG1GC -jar server.jar",
+		},
+		{
+			str: "java ${jvmArgs} -jar server.jar",
+			data: map[string]any{
+				"jvmArgs": "-Dprop=\"hello world\"",
+			},
+			expected: "java -Dprop=\"hello world\" -jar server.jar",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.str, func(t *testing.T) {

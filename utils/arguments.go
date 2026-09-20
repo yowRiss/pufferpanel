@@ -14,7 +14,14 @@ var PlainReplace = func(str string, key string, value any) string {
 }
 
 var ShellReplace = func(str string, key string, value any) string {
-	return PlainReplace(str, key, shellwords.Quote(cast.ToString(value)))
+	val := cast.ToString(value)
+	if val == "" {
+		return PlainReplace(str, key, "")
+	}
+	if key == "${jvmArgs}" {
+		return PlainReplace(str, key, val)
+	}
+	return PlainReplace(str, key, shellwords.Quote(val))
 }
 
 func ReplaceTokens(msg string, mapping map[string]any, function StringReplaceFunc) string {
